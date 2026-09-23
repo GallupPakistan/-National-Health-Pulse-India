@@ -3,7 +3,8 @@ import pandas as pd
 import plotly.express as px
 from utils import (branding, page_header, load, has, weighted_mean, weighted_pct,
                     sidebar_filters, apply_filters, style_bar, style_pie, no_data,
-                    bar_with_table_toggle, COLOR_SECTOR, COLOR_GENDER, choropleth_state_map)
+                    bar_with_table_toggle, COLOR_SECTOR, COLOR_GENDER, choropleth_state_map,
+                    group_top_n_other)
 
 st.set_page_config(page_title="Overview — National Health Pulse India", layout="wide", page_icon="📋")
 branding()
@@ -95,7 +96,7 @@ with c1:
 
 with c2:
     if has(d, "Religion"):
-        r = weighted_pct(d, "Religion", W)
+        r = group_top_n_other(weighted_pct(d, "Religion", W), "Religion")
         fig = px.pie(r, names="Religion", values="pct", title="Religion", hole=0.45)
         st.plotly_chart(style_pie(fig), use_container_width=True)
     else:
@@ -103,7 +104,7 @@ with c2:
 
 with c3:
     if has(d, "Social group"):
-        sg = weighted_pct(d, "Social group", W)
+        sg = group_top_n_other(weighted_pct(d, "Social group", W), "Social group")
         fig = px.pie(sg, names="Social group", values="pct", title="Social group", hole=0.45)
         st.plotly_chart(style_pie(fig), use_container_width=True)
     else:

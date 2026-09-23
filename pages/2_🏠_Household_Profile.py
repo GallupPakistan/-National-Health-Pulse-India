@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 from utils import (branding, page_header, load, has, weighted_mean, weighted_pct,
                     sidebar_filters, apply_filters, style_bar, style_pie, no_data,
-                    bar_with_table_toggle, COLOR_SECTOR, correlation_heatmap)
+                    bar_with_table_toggle, COLOR_SECTOR, correlation_heatmap, group_top_n_other)
 
 st.set_page_config(page_title="Household Profile — National Health Pulse India", layout="wide", page_icon="🏠")
 branding()
@@ -65,14 +65,14 @@ st.subheader("🧾 Household demographics")
 c3, c4 = st.columns(2)
 with c3:
     if has(d, "b5i2"):
-        rel = weighted_pct(d, "b5i2", W)
+        rel = group_top_n_other(weighted_pct(d, "b5i2", W), "b5i2")
         fig = px.pie(rel, names="b5i2", values="pct", title="Religion of household head", hole=0.45)
         st.plotly_chart(style_pie(fig), use_container_width=True)
     else:
         no_data("Religion")
 with c4:
     if has(d, "b5i3"):
-        sg = weighted_pct(d, "b5i3", W)
+        sg = group_top_n_other(weighted_pct(d, "b5i3", W), "b5i3")
         fig = px.pie(sg, names="b5i3", values="pct", title="Social group", hole=0.45)
         st.plotly_chart(style_pie(fig), use_container_width=True)
     else:

@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 from utils import (branding, page_header, load, has, weighted_mean, weighted_pct,
                     sidebar_filters, apply_filters, style_bar, style_pie, no_data,
-                    bar_with_table_toggle, COLOR_SECTOR, nested_sunburst)
+                    bar_with_table_toggle, COLOR_SECTOR, nested_sunburst, group_top_n_other)
 
 st.set_page_config(page_title="Antenatal Care — National Health Pulse India", layout="wide", page_icon="🤰")
 branding()
@@ -69,7 +69,7 @@ with c1:
 with c2:
     st.subheader("🏠 Place of delivery")
     if has(d, "b11c8"):
-        pod = weighted_pct(d, "b11c8", W)
+        pod = group_top_n_other(weighted_pct(d, "b11c8", W), "b11c8")
         fig = px.pie(pod, names="b11c8", values="pct", title="Place of delivery", hole=0.45)
         st.plotly_chart(style_pie(fig), use_container_width=True)
     else:

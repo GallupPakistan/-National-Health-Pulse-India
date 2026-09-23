@@ -48,7 +48,7 @@ def load(name: str) -> pd.DataFrame:
     # Some files carry a stray "99" (not-stated / invalid) code in the
     # state column instead of a real state name. It breaks charts (turns
     # a categorical axis numeric) and skews state-wise stats, so drop it.
-    for state_col in ("state", "State"):
+    for state_col in ("state", "State", "st"):
         if state_col in df.columns:
             df = df[df[state_col].astype(str).str.strip() != "99"]
     return df
@@ -90,6 +90,22 @@ def weighted_rate_per_1000(numerator_df: pd.DataFrame, denominator_df: pd.DataFr
     num = pd.to_numeric(numerator_df[weight], errors="coerce").sum() if weight in numerator_df else 0
     den = pd.to_numeric(denominator_df[weight], errors="coerce").sum() if weight in denominator_df else 0
     return (num / den * 1000) if den else float("nan")
+
+
+def group_top_n_other(pct_df: pd.DataFrame, label_col: str, n: int = 6,
+                       value_col: str = "pct") -> pd.DataFrame:
+    """Collapse a weighted_pct() result down to the top `n` categories plus
+    a single "Other" slice for everything else. Without this, a pie chart
+    built straight from a high-cardinality text column (Religion, Social
+    group, Place of delivery, ...) renders a wall of unreadable slivers."""
+    if pct_df.empty or len(pct_df) <= n:
+        return pct_df
+    d = pct_df.sort_values(value_col, ascending=False).reset_index(drop=True)
+    top = d.iloc[:n].copy()
+    other_val = d.iloc[n:][value_col].sum()
+    other_row = {c: ("Other" if c == label_col else other_val if c == value_col else None)
+                 for c in d.columns}
+    return pd.concat([top, pd.DataFrame([other_row])], ignore_index=True)
 
 
 def wrap_labels(series, width=18):
@@ -346,9 +362,23 @@ _GEOJSON_NAME_FIX = {
 
 
 def decode_state_code(df: pd.DataFrame, code_col: str = "st") -> pd.Series:
-    """Turn a raw numeric state code column into readable state names."""
-    codes = pd.to_numeric(df[code_col], errors="coerce")
-    return codes.map(STATE_CODE_MAP)
+    """Turn a state column into readable state names.
+
+    Handles both shapes seen across the survey files: a raw numeric state
+    code (mapped through STATE_CODE_MAP) and an already-decoded text state
+    name (e.g. hospitalization/ailment/person/vaccination files carry
+    "Ladakh", "Tamil Nadu", ... directly in this column — passing those
+    through pd.to_numeric() alone turned ~99% of rows to NaN and silently
+    emptied every best/worst-state callout built on top of it).
+    """
+    raw = df[code_col]
+    codes = pd.to_numeric(raw, errors="coerce")
+    if codes.notna().mean() > 0.5:
+        # mostly numeric -> treat as state codes
+        return codes.map(STATE_CODE_MAP)
+    # mostly text already -> just clean it up
+    text = raw.astype(str).str.strip()
+    return text.replace({"nan": None, "": None, "99": None})
 
 
 def state_rank_avg(d: pd.DataFrame, state_code_col: str, value_col: str, weight_col: str):
@@ -528,7 +558,7 @@ def dual_axis_combo(d: pd.DataFrame, cat_col: str, weight_col: str, value_col: s
 FIELD_MAPS = {
     # kind: (state_col, sector_col, gender_col, age_col, weight_col)
     "master": ("state", "sector", "Gender", "Age(in years)", "final_weight"),
-    "detail": ("state", "sec", "b3c4", "b3c5", "wt"),   # generic detail tables merged w/ person cols
+    "detail": ("st", "sec", "b3c4", "b3c5", "wt"),   # generic detail tables merged w/ person cols
     "household": (None, "sec", None, None, "wt"),        # household.csv has no person/state text col directly
     "deaths": (None, "sec", None, "b4c4", "wt"),
 }

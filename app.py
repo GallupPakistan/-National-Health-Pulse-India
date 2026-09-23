@@ -17,10 +17,17 @@ profiles**, **person-level demographics**, and **deaths** — broken down by sta
 sector (Rural/Urban), gender and age wherever the underlying file allows it.
 """)
 
+n_states_display = "36"
+n_persons_display = "6.5L+"
+
 try:
     master = load("nss_health_master_FULL.csv")
     if master.empty:
         raise FileNotFoundError
+
+    if has(master, "state"):
+        n_states_display = f"{master['state'].nunique():,}"
+    n_persons_display = f"{len(master) / 100000:.1f}L+"  # raw respondents, not weighted population
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("👤 Persons covered (weighted)",
@@ -100,13 +107,13 @@ glance_css = """
 </style>
 """
 st.markdown(glance_css, unsafe_allow_html=True)
-st.markdown("""
+st.markdown(f"""
 <div class="glance-wrap">
   <div class="glance-title">📊 Survey at a glance</div>
   <div class="glance-sub">NSS 80th Round · Household Social Consumption: Health Survey (Schedule 25.0) — a single cross-sectional round covering India's rural and urban households.</div>
   <div class="glance-grid">
-    <div class="glance-chip"><div class="g-val">36</div><div class="g-lbl">States &amp; UTs</div></div>
-    <div class="glance-chip"><div class="g-val">6.5L+</div><div class="g-lbl">Persons surveyed</div></div>
+    <div class="glance-chip"><div class="g-val">{n_states_display}</div><div class="g-lbl">States &amp; UTs</div></div>
+    <div class="glance-chip"><div class="g-val">{n_persons_display}</div><div class="g-lbl">Persons surveyed</div></div>
     <div class="glance-chip"><div class="g-val">8</div><div class="g-lbl">Linked datasets</div></div>
     <div class="glance-chip"><div class="g-val">Rural / Urban</div><div class="g-lbl">Sector split</div></div>
     <div class="glance-chip"><div class="g-val">In &amp; Out-patient</div><div class="g-lbl">Care coverage</div></div>
