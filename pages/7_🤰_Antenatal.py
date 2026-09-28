@@ -1,122 +1,130 @@
-import streamlit as st
 import pandas as pd
 import plotly.express as px
-from utils import (branding, page_header, load, has, weighted_mean, weighted_pct,
-                    sidebar_filters, apply_filters, style_bar, style_pie, no_data,
-                    bar_with_table_toggle, COLOR_SECTOR, nested_sunburst, group_top_n_other)
+import streamlit as st
 
-st.set_page_config(page_title="Antenatal Care — National Health Pulse India", layout="wide", page_icon="🤰")
+from utils import (branding, page_header, require, weighted_mean, weighted_pct, weighted_share, wsum, group_wmean,
+                   sidebar_filters, apply_filters, style_bar, style_pie, show, note, bar_with_table_toggle,
+                   rank_callout, choropleth_state_map, nested_sunburst, COLOR_SECTOR)
+
+st.set_page_config(page_title="Antenatal & Childbirth — National Health Pulse India", layout="wide", page_icon="🤰")
 branding()
 
-df = load("antenatal_full.csv")
-if df.empty:
-    st.error("`antenatal_full.csv` not found in the `data/` folder.")
+W = "wt"
+ACOLS = ["st", "sec", W, "b11c2", "b11c4", "b11c4_code", "b11c6", "b11c7", "b11c7_code", "b11c8", "b11c8_code", "b11c9",
+         "b11c11", "b11c11_code", "b11c13"]
+an = require("antenatal_full.csv", ACOLS)
+filters = sidebar_filters(an, "ante")
+d = apply_filters(an, filters, "ante")
+page_header("🤰", "Antenatal, Childbirth & Postnatal Care",
+            "Women aged 15-49 who were pregnant in the last 365 days: care received, place of delivery, outcome, cost",
+            crumb="Dashboard / Antenatal", badge_label="Sample pregnancies", badge_value=f"{len(d):,}")
+if d.empty:
+    st.warning("No records for this combination of filters.")
     st.stop()
 
-# b11c2 no. of ANC visits, b11c4 source of ANC care, b11c6 expenditure on ANC,
-# b11c7 pregnancy/birth outcome, b11c8 place of delivery, birth_outcome flag
-filters = sidebar_filters(df, kind="detail")
-d = apply_filters(df, filters)
-W = "wt"
+# Schedule 25.0, Block 11 codes:  col 4 / col 11 source of ANC / PNC (8 = no care received)
+#   col 7 outcome: 1 continuing, 2 live birth, 3 stillbirth, 4 abortion, 5-7 mother died, 9 other
+#   col 8 place of delivery: 1 govt hospital, 2 charitable/NGO, 3 private hospital, 4 home
+c4 = pd.to_numeric(d["b11c4_code"], errors="coerce")
+c7 = pd.to_numeric(d["b11c7_code"], errors="coerce")
+c8 = pd.to_numeric(d["b11c8_code"], errors="coerce")
+c11 = pd.to_numeric(d["b11c11_code"], errors="coerce")
+childbirth = c7.isin([2, 3, 5, 6])                 # live birth or stillbirth (incl. mother died)
+dcb = d[childbirth]
 
-page_header("🤰", "Antenatal Care Deep-dive",
-            "ANC visit count distribution, source of care, birth outcome breakdown, state/sector-wise coverage for women",
-            crumb="Dashboard / Antenatal Care", badge_label="Records", badge_value=f"{len(d):,}")
+anc = weighted_share(d, c4 != 8, W, universe=c4.notna())
+pnc = weighted_share(d, c11 != 8, W, universe=childbirth & c11.notna())
+inst_mask = childbirth & c8.notna()
+inst = weighted_share(d, c8.isin([1, 2, 3]), W, universe=inst_mask)
 
-from utils import state_rank_avg, render_insight_callout
-_nat, _bs, _bv, _ws, _wv = state_rank_avg(d, "st", "b11c2", W)
-render_insight_callout(_nat, _bs, _bv, _ws, _wv, "Avg number of ANC visits",
-                        fmt="{:.1f}", unit="", higher_is_worse=False)
+# ---------------- key takeaway ----------------
+t = d[inst_mask].assign(i=c8[inst_mask].isin([1, 2, 3]))
+t["wi"] = t[W] * t["i"]
+st_inst = t.groupby("st", observed=True).agg(wi=("wi", "sum"), w=(W, "sum"), n=(W, "size")).reset_index()
+st_inst["rate"] = st_inst["wi"] / st_inst["w"] * 100
+rank_callout(st_inst, "st", "rate", "n", "The share of childbirths that took place in a medical institution", inst,
+             fmt="{:.1f}", suffix="%",
+             caution="Institutional delivery is high in most states; a few states with smaller samples differ more.")
 
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("🤰 ANC records (weighted)", f"{pd.to_numeric(d[W], errors='coerce').sum():,.0f}" if has(d, W) else "N/A")
-k2.metric("📅 Avg ANC visits", f"{weighted_mean(d, 'b11c2', W):.1f}" if has(d, "b11c2", W) else "N/A")
-k3.metric("💰 Avg ANC expenditure", f"Rs. {weighted_mean(d, 'b11c6', W):,.0f}" if has(d, "b11c6", W) else "N/A")
-
-if has(d, "birth_outcome"):
-    bo = weighted_pct(d, "birth_outcome", W)
-    live = bo[bo["birth_outcome"].astype(str) == "1"]
-    k4.metric("👶 Live-birth share", f"{live['pct'].iloc[0]:.1f}%" if not live.empty else "N/A")
-else:
-    k4.metric("👶 Live-birth share", "N/A")
-
-st.divider()
-
-st.subheader("📊 ANC visit count distribution")
-if has(d, "b11c2"):
-    vc = d[["b11c2", W]].dropna().copy()
-    vc["b11c2"] = pd.to_numeric(vc["b11c2"], errors="coerce")
-    bins = [-1, 0, 3, 6, 9, 200]
-    labels = ["0 visits", "1-3 visits", "4-6 visits", "7-9 visits", "10+ visits"]
-    vc["band"] = pd.cut(vc["b11c2"], bins=bins, labels=labels, right=True)
-    band = vc.groupby("band", observed=True)[W].sum().reset_index()
-    band["pct"] = (band[W] / band[W].sum() * 100).round(2)
-    fig = px.bar(band, x="band", y="pct", title="Number of antenatal visits", color="band")
-    st.plotly_chart(style_bar(fig, n_categories=len(band)), use_container_width=True)
-else:
-    no_data("ANC visit count")
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("🤰 Pregnancies (weighted)", f"{wsum(d, W):,.0f}")
+k2.metric("🩺 Received antenatal care", f"{anc:.1f}%", help="Any source other than 'no care was received'. Official: about 98%.")
+k3.metric("🍼 Received postnatal care", f"{pnc:.1f}%", help="Among childbirths (live or stillbirth). Official: 92% rural, 95% urban.")
+k4.metric("🏥 Childbirths in an institution", f"{inst:.1f}%", help="Government, charitable or private hospital. Official: about 96%.")
+k5.metric("💰 Avg spend on antenatal care", f"Rs. {weighted_mean(d, 'b11c6', W):,.0f}",
+          help="Per pregnancy, including those who spent nothing (excludes those with no ANC).")
 
 st.divider()
-
+st.subheader("🩺 Antenatal & postnatal care")
 c1, c2 = st.columns(2)
 with c1:
-    st.subheader("🏥 Source of ANC care")
-    if has(d, "b11c4"):
-        src = weighted_pct(d, "b11c4", W)
-        bar_with_table_toggle(st, src, "b11c4", "pct", "Where antenatal care was received", key="anc_src", top_n=6)
-    else:
-        no_data("Source of ANC care")
+    show(style_pie(px.pie(weighted_pct(d, "b11c4", W), names="b11c4", values="pct", title="Major source of antenatal care", hole=0.45), height=430))
 with c2:
-    st.subheader("🏠 Place of delivery")
-    if has(d, "b11c8"):
-        pod = group_top_n_other(weighted_pct(d, "b11c8", W), "b11c8")
-        fig = px.pie(pod, names="b11c8", values="pct", title="Place of delivery", hole=0.45)
-        st.plotly_chart(style_pie(fig), use_container_width=True)
-    else:
-        no_data("Place of delivery")
+    show(style_pie(px.pie(weighted_pct(dcb, "b11c11", W), names="b11c11", values="pct",
+                          title="Major source of postnatal care (childbirths)", hole=0.45), height=430))
+note("The number of ANC visits is not collected in this schedule; the indicators are whether care was received and from where.")
 
 st.divider()
-
-st.subheader("👶 Birth outcome breakdown")
-if has(d, "b11c7"):
-    bo = weighted_pct(d, "b11c7", W)
-    fig = px.pie(bo, names="b11c7", values="pct", title="Pregnancy / birth outcome", hole=0.45)
-    st.plotly_chart(style_pie(fig), use_container_width=True)
-else:
-    no_data("Birth outcome")
-
-st.divider()
-
-st.subheader("🗺️ State/sector-wise antenatal care coverage")
+st.subheader("🏥 Childbirth")
 c3, c4 = st.columns(2)
 with c3:
-    if has(d, "sec"):
-        s = d.copy()
-        s["Sector"] = s["sec"].map({1: "Rural", 2: "Urban", "1": "Rural", "2": "Urban"}).fillna(s["sec"].astype(str))
-        sec = weighted_pct(s, "Sector", W)
-        fig = px.pie(sec, names="Sector", values="pct", title="Rural vs Urban", color="Sector",
-                     color_discrete_map=COLOR_SECTOR, hole=0.45)
-        st.plotly_chart(style_pie(fig), use_container_width=True)
-    else:
-        no_data("Sector")
+    show(style_pie(px.pie(weighted_pct(d[inst_mask], "b11c8", W), names="b11c8", values="pct",
+                          title="Place of delivery (childbirths)", hole=0.45), height=430))
 with c4:
-    if has(d, "st"):
-        state_cov = weighted_pct(d, "st", W).rename(columns={"st": "State code"})
-        bar_with_table_toggle(st, state_cov, "State code", "pct", "Records by state code", key="anc_state", top_n=10)
-    else:
-        no_data("State")
+    bar_with_table_toggle(st, weighted_pct(d, "b11c7", W), "b11c7", "pct", "Outcome of pregnancy (all pregnancies)",
+                          key="ante_outcome", top_n=8, label_width=46)
+home = d[c8 == 4]
+if len(home) and home["b11c9"].notna().any():
+    st.subheader("🏠 Who attended home deliveries")
+    bar_with_table_toggle(st, weighted_pct(home, "b11c9", W), "b11c9", "pct", "Delivery attended by (home deliveries)",
+                          key="ante_attendant", top_n=6)
 
 st.divider()
+st.subheader("💰 Spending")
+c5, c6 = st.columns(2)
+with c5:
+    rows = []
+    for s in ["Rural", "Urban"]:
+        ds = d[d["sec"].astype(str) == s]
+        if len(ds):
+            rows.append({"Sector": s, "Avg ANC spend (Rs.)": weighted_mean(ds, "b11c6", W),
+                         "Avg PNC spend (Rs.)": weighted_mean(ds, "b11c13", W)})
+    if rows:
+        m = pd.DataFrame(rows).melt(id_vars="Sector", var_name="Measure", value_name="Rs.")
+        fig = px.bar(m, x="Measure", y="Rs.", color="Sector", barmode="group", color_discrete_map=COLOR_SECTOR,
+                     title="Average spend per pregnancy (Rs.)")
+        show(fig)
+with c6:
+    by = group_wmean(d[d["b11c6"].notna()], "b11c4", "b11c6", W)
+    if not by.empty:
+        by["b11c4"] = by["b11c4"].astype(str)
+        fig = px.bar(by.sort_values("mean"), x="mean", y="b11c4", orientation="h", color="b11c4",
+                     title="Average antenatal spend by source of care (Rs.)")
+        fig.update_layout(yaxis_title="", showlegend=False, xaxis_title="Rs.")
+        show(style_bar(fig, horizontal=True, n_categories=len(by), unit="Rs.", decimals=0))
 
-# ---------------- NEW: Sunburst — a joint number not shown above ----------------
-st.subheader("🌞 Source of care × Place of delivery × Birth outcome — a joint view not shown above")
-drawn = nested_sunburst(d, ["b11c4", "b11c8", "b11c7"], W,
-                         "Weighted records: Source of ANC care → Place of delivery → Birth outcome")
-if drawn:
-    st.caption("Source of care, place of delivery and birth outcome were each shown separately above as "
-               "individual bar/pie charts. This combines all three so you can see, for example, whether "
-               "home deliveries after private ANC care show a different outcome mix than hospital deliveries.")
-else:
-    no_data("Source × Place × Outcome sunburst")
+st.divider()
+st.subheader("👩 Age of the women")
+ag = d.assign(band=pd.cut(pd.to_numeric(d["b11c2"], errors="coerce"), [14, 19, 24, 29, 34, 39, 100],
+                          labels=["15-19", "20-24", "25-29", "30-34", "35-39", "40+"]))
+gg = ag.dropna(subset=["band"]).groupby("band", observed=True)[W].sum().reset_index()
+gg["pct"] = gg[W] / gg[W].sum() * 100
+gg["band"] = gg["band"].astype(str)
+fig = px.bar(gg, x="band", y="pct", color="band", title="Age at pregnancy (years)")
+show(style_bar(fig, n_categories=len(gg)))
+note(f"Average age: {weighted_mean(d, 'b11c2', W):.1f} years. A few respondents are recorded above 49 (data as collected).")
 
-st.caption("Source: antenatal_full.csv — weighted using `wt`. Focused view for women of reproductive age captured by the survey.")
+st.divider()
+st.subheader("🗺️ Institutional childbirth by state")
+c7, c8m = st.columns(2)
+with c7:
+    bar_with_table_toggle(st, st_inst, "st", "rate", "Childbirths in a medical institution (%)", key="ante_state")
+with c8m:
+    choropleth_state_map(st_inst.rename(columns={"st": "state"}), "state", "rate", "Institutional childbirth (%)", unit="%", height=480)
+
+st.divider()
+st.subheader("🌞 Care pathway (childbirths)")
+sb = dcb.assign(b11c4=dcb["b11c4"].astype(str), b11c8=dcb["b11c8"].astype(str), b11c7=dcb["b11c7"].astype(str))
+nested_sunburst(sb, ["b11c4", "b11c8", "b11c7"], W, "Source of ANC → place of delivery → outcome")
+
+st.caption("Source: antenatal_full.csv — weighted with `wt`.")

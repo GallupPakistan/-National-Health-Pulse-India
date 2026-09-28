@@ -1,1 +1,4 @@
-Place the 8 survey CSV files here (see README.md).
+Copy the 8 CSV files from nss_health_data_v3.zip into this folder:
+  nss_health_master_FULL.csv, household.csv, person.csv, hospitalization_cases_full.csv,
+  ailment_spells_full.csv, vaccination_full.csv, antenatal_full.csv, deaths_full.csv
+(india_states.geojson is already here.)

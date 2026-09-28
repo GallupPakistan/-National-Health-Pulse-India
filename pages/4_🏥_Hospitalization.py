@@ -1,266 +1,176 @@
-import streamlit as st
+import numpy as np
 import pandas as pd
 import plotly.express as px
-import numpy as np
-from utils import (branding, page_header, load, has, weighted_mean, weighted_pct,
-                    sidebar_filters, apply_filters, style_bar, style_pie, no_data,
-                    bar_with_table_toggle, COLOR_GENDER, dual_axis_combo, decode_state_code)
+import streamlit as st
+
+from utils import (branding, page_header, require, weighted_mean, weighted_pct, wsum, group_wmean, rate_by, age_band,
+                   sidebar_filters, apply_filters, style_bar, style_pie, show, note, bar_with_table_toggle,
+                   rank_callout, dual_axis_combo, correlation_heatmap, group_top_n_other, MIN_N,
+                   COLOR_GENDER, AGE_LABELS)
 
 st.set_page_config(page_title="Hospitalization — National Health Pulse India", layout="wide", page_icon="🏥")
 branding()
 
-df = load("hospitalization_cases_full.csv")
-if df.empty:
-    st.error("`hospitalization_cases_full.csv` not found in the `data/` folder.")
+W = "wt"
+HCOLS = ["st", "sec", W, "childbirth", "b6i5", "b6i7", "b6i9", "b6i12", "exp_total_hosp", "exp_oop_hosp_total",
+         "exp_medical_hosp", "exp_oop_hosp_medical", "b7i5", "b7i17"]
+hosp = require("hospitalization_cases_full.csv", HCOLS, events=True)
+master = require("nss_health_master_FULL.csv", ["state", "sector", "Gender", "Age(in years)", "final_weight"])
+
+filters = sidebar_filters(hosp, "hosp")
+scope = st.sidebar.radio("Cases included", ["Excluding childbirth (official basis)", "Childbirth only", "All cases"],
+                         key="hosp_scope")
+all_cases = apply_filters(hosp, filters, "hosp")
+non_cb = all_cases[all_cases["childbirth"] == 0]
+dc = {"Excluding childbirth (official basis)": non_cb,
+      "Childbirth only": all_cases[all_cases["childbirth"] == 1], "All cases": all_cases}[scope]
+pop = apply_filters(master, filters, "master")          # persons - denominator for rates
+
+page_header("🏥", "Hospitalization",
+            "In-patient admissions in the last 365 days: nature of ailment, hospital type, stay, expenditure and rates",
+            crumb="Dashboard / Hospitalization", badge_label="Sample cases", badge_value=f"{len(dc):,}")
+if dc.empty or pop.empty:
+    st.warning("No records for this combination of filters.")
     st.stop()
 
-# key columns: b6i5 nature of ailment, b6i7 hospital type, b6i9 payment category,
-# b6i12 duration of stay (days), childbirth flag,
-# exp_total_hosp / exp_oop_hosp_total / exp_medical_hosp / exp_oop_hosp_medical,
-# person_b3c4 gender, person_b3c5 age, st/sec via state text not present -> use sec
-filters = sidebar_filters(df, kind="detail")
-d = apply_filters(df, filters)
-W = "wt"
+rate = wsum(non_cb, W) / wsum(pop, "final_weight") * 100
+oop_med = weighted_mean(dc, "exp_oop_hosp_medical", W)
 
-page_header("🏥", "Hospitalization Deep-dive",
-            "Nature of ailment, hospital type, duration of stay, expenditure breakdown, childbirth cases, age/gender pattern",
-            crumb="Dashboard / Hospitalization", badge_label="Cases", badge_value=f"{len(d):,}")
+# ---------------- key takeaway ----------------
+st_cost = group_wmean(dc, "st", "exp_oop_hosp_medical", W)
+rank_callout(st_cost, "st", "mean", "n", "The average out-of-pocket medical expenditure per hospitalization case", oop_med,
+             unit="Rs. ",
+             caution="Costs reflect the mix of hospitals used and the illnesses treated, not only prices; "
+                     "states with fewer than the minimum sample are left out of the ranking.")
 
-# ---------------- NEW: Key takeaway + best/worst state ----------------
-_national_avg_exp = weighted_mean(d, "exp_total_hosp", W) if has(d, "exp_total_hosp", W) else None
-
-_best_state, _worst_state, _best_val, _worst_val = None, None, None, None
-if has(d, "st", "exp_total_hosp", W):
-    from utils import decode_state_code
-    _sdf = d[["st", "exp_total_hosp", W]].dropna().copy()
-    _sdf["state"] = decode_state_code(_sdf, "st")
-    _sdf = _sdf.dropna(subset=["state"])
-    _sdf[W] = pd.to_numeric(_sdf[W], errors="coerce")
-    _sdf["exp_total_hosp"] = pd.to_numeric(_sdf["exp_total_hosp"], errors="coerce")
-    _sdf["_wsum"] = _sdf["exp_total_hosp"] * _sdf[W]
-    _grp = _sdf.groupby("state").agg(_wsum=("_wsum", "sum"), _wtot=(W, "sum"))
-    _grp["avg_exp"] = _grp["_wsum"] / _grp["_wtot"]
-    _grp = _grp.replace([float("inf"), float("-inf")], pd.NA).dropna(subset=["avg_exp"])
-    if len(_grp) > 1:
-        _best_state, _best_val = _grp["avg_exp"].idxmin(), _grp["avg_exp"].min()    # lowest cost = "best"
-        _worst_state, _worst_val = _grp["avg_exp"].idxmax(), _grp["avg_exp"].max()  # highest cost = "worst"
-
-if _national_avg_exp is not None:
-    takeaway = f"📌 **Key takeaway:** The average hospitalization case costs **Rs. {_national_avg_exp:,.0f}** nationally."
-    if _best_state and _worst_state:
-        takeaway += (f" **{_worst_state}** has the highest average cost (**Rs. {_worst_val:,.0f}**) — "
-                     f"**{_worst_val / _national_avg_exp:.1f}×** the national average — while **{_best_state}** "
-                     f"has the lowest (**Rs. {_best_val:,.0f}**).")
-    st.info(takeaway)
-
-if _best_state and _worst_state:
-    bcol1, bcol2 = st.columns(2)
-    bcol1.success(f"🏆 **Lowest avg cost:** {_best_state} — Rs. {_best_val:,.0f}")
-    bcol2.error(f"⚠️ **Highest avg cost:** {_worst_state} — Rs. {_worst_val:,.0f}")
-
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("🏥 Hospitalization cases (weighted)", f"{pd.to_numeric(d[W], errors='coerce').sum():,.0f}" if has(d, W) else "N/A")
-k2.metric("💰 Avg total expenditure", f"Rs. {weighted_mean(d, 'exp_total_hosp', W):,.0f}" if has(d, "exp_total_hosp", W) else "N/A")
-k3.metric("💸 Avg out-of-pocket expenditure", f"Rs. {weighted_mean(d, 'exp_oop_hosp_total', W):,.0f}" if has(d, "exp_oop_hosp_total", W) else "N/A")
-k4.metric("📆 Avg duration of stay", f"{weighted_mean(d, 'b6i12', W):.1f} days" if has(d, "b6i12", W) else "N/A")
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("🏥 Cases (weighted)", f"{wsum(dc, W):,.0f}", help=f"Scope: {scope}")
+k2.metric("📊 Hospitalization rate", f"{rate:.1f}%",
+          help="Admissions excluding childbirth per 100 persons in the selected population. Official: 2.9%.")
+k3.metric("💊 Avg out-of-pocket medical exp. / case", f"Rs. {oop_med:,.0f}",
+          help="Medical expenditure minus reimbursement (floored at 0). Official (excl. childbirth): about Rs. 34,064.")
+k4.metric("🧾 Avg total expenditure / case", f"Rs. {weighted_mean(dc, 'exp_total_hosp', W):,.0f}",
+          help="Medical + transport + other non-medical, before reimbursement.")
+k5.metric("🛏️ Avg length of stay", f"{weighted_mean(dc, 'b6i12', W):.1f} days")
 
 st.divider()
-
-st.subheader("🩺 Nature of ailment (top 10)")
-if has(d, "b6i5"):
-    n = weighted_pct(d, "b6i5", W)
-    bar_with_table_toggle(st, n, "b6i5", "pct", "Nature of ailment leading to hospitalization", key="hosp_ailment", top_n=10)
-else:
-    no_data("Nature of ailment")
-
-st.divider()
-
-c1, c2 = st.columns(2)
+st.subheader("🩺 What people are admitted for")
+c1, c2 = st.columns([3, 2])
 with c1:
-    st.subheader("🏨 Type of hospital")
-    if has(d, "b6i7"):
-        h = weighted_pct(d, "b6i7", W)
-        fig = px.pie(h, names="b6i7", values="pct", title="Govt. vs Private vs Charitable", hole=0.45)
-        st.plotly_chart(style_pie(fig), use_container_width=True)
-    else:
-        no_data("Hospital type")
+    bar_with_table_toggle(st, weighted_pct(dc, "b6i5", W), "b6i5", "pct", "Nature of ailment (% of cases)",
+                          key="h_ailment", top_n=10, label_width=48)
 with c2:
-    st.subheader("💳 Payment category")
-    if has(d, "b6i9"):
-        p = weighted_pct(d, "b6i9", W)
-        fig = px.pie(p, names="b6i9", values="pct", title="Free / Paying general / Paying special", hole=0.45)
-        st.plotly_chart(style_pie(fig), use_container_width=True)
-    else:
-        no_data("Payment category")
+    show(style_pie(px.pie(weighted_pct(dc, "b6i7", W), names="b6i7", values="pct",
+                          title="Type of medical institution", hole=0.45), height=420))
 
-st.divider()
-
-st.subheader("💵 Expenditure breakdown — medical vs non-medical, OOP vs covered")
-rows = []
-for col, label in [("exp_medical_hosp", "Medical"),
-                    ("exp_total_hosp", "Total (medical + non-medical)"),
-                    ("exp_oop_hosp_medical", "Out-of-pocket — medical"),
-                    ("exp_oop_hosp_total", "Out-of-pocket — total")]:
-    if has(d, col, W):
-        rows.append({"Component": label, "Avg expenditure (Rs.)": weighted_mean(d, col, W)})
-if rows:
-    exp_df = pd.DataFrame(rows)
-    fig = px.bar(exp_df, x="Component", y="Avg expenditure (Rs.)", color="Component",
-                 title="Average expenditure per hospitalization case")
-    st.plotly_chart(style_bar(fig, n_categories=len(exp_df), unit="Rs.", decimals=0), use_container_width=True)
-    non_medical_share = None
-    if has(d, "exp_total_hosp", "exp_medical_hosp"):
-        total = weighted_mean(d, "exp_total_hosp", W)
-        med = weighted_mean(d, "exp_medical_hosp", W)
-        if total:
-            non_medical_share = 100 * (total - med) / total
-    if non_medical_share is not None:
-        st.caption(f"Non-medical costs (transport, lodging, etc.) account for roughly "
-                   f"**{non_medical_share:.1f}%** of total hospitalization expenditure on average.")
-else:
-    no_data("Expenditure breakdown")
-
-st.divider()
-
-st.subheader("👶 Childbirth-related cases")
-if has(d, "childbirth"):
-    cb = d.copy()
-    cb["Childbirth case"] = cb["childbirth"].map({1: "Yes", 0: "No"}).fillna(cb["childbirth"].astype(str))
-    cb_pct = weighted_pct(cb, "Childbirth case", W)
-    c3, c4 = st.columns(2)
-    with c3:
-        fig = px.pie(cb_pct, names="Childbirth case", values="pct", title="Share of hospitalizations that are childbirth", hole=0.45)
-        st.plotly_chart(style_pie(fig), use_container_width=True)
-    with c4:
-        if has(d, "exp_total_hosp"):
-            ce = cb[["Childbirth case", "exp_total_hosp", W]].copy()
-            ce[W] = pd.to_numeric(ce[W], errors="coerce")
-            ce["exp_total_hosp"] = pd.to_numeric(ce["exp_total_hosp"], errors="coerce")
-            ce["_wsum"] = ce["exp_total_hosp"] * ce[W]
-            grp = ce.groupby("Childbirth case").agg(_wsum=("_wsum", "sum"), _wtot=(W, "sum")).reset_index()
-            grp["Avg total expenditure (Rs.)"] = grp["_wsum"] / grp["_wtot"]
-            cb_exp = grp[["Childbirth case", "Avg total expenditure (Rs.)"]].replace(
-                [float("inf"), float("-inf")], pd.NA).dropna()
-            fig2 = px.bar(cb_exp, x="Childbirth case", y="Avg total expenditure (Rs.)", color="Childbirth case",
-                          title="Avg expenditure: childbirth vs other hospitalizations")
-            st.plotly_chart(style_bar(fig2, n_categories=2), use_container_width=True)
-else:
-    no_data("Childbirth flag")
-
-st.divider()
-
-st.subheader("👤 Age / gender-wise hospitalization pattern")
-c5, c6 = st.columns(2)
+c3, c4, c5 = st.columns(3)
+with c3:
+    show(style_pie(px.pie(weighted_pct(dc, "b6i9", W), names="b6i9", values="pct",
+                          title="Type of ward", hole=0.45), height=400))
+with c4:
+    bar_with_table_toggle(st, weighted_pct(dc, "b7i17", W), "b7i17", "pct", "Major source of finance", key="h_fin",
+                          top_n=6, label_width=30)
 with c5:
-    if has(d, "person_b3c4"):
-        g = weighted_pct(d, "person_b3c4", W)
-        fig = px.pie(g, names="person_b3c4", values="pct", title="Gender of hospitalized person",
-                     color="person_b3c4", color_discrete_map=COLOR_GENDER, hole=0.45)
-        st.plotly_chart(style_pie(fig), use_container_width=True)
-    else:
-        no_data("Gender of hospitalized person")
+    show(style_pie(px.pie(weighted_pct(dc, "b7i5", W), names="b7i5", values="pct",
+                          title="Any medical service provided free?", hole=0.45), height=400))
+
+st.divider()
+st.subheader("💰 What a hospitalization costs")
+c6, c7 = st.columns(2)
 with c6:
-    if has(d, "person_b3c5"):
-        age = d[["person_b3c5", W]].dropna().copy()
-        age["person_b3c5"] = pd.to_numeric(age["person_b3c5"], errors="coerce")
-        bins = [0, 5, 18, 30, 45, 60, 200]
-        labels = ["0-5", "6-18", "19-30", "31-45", "46-60", "60+"]
-        age["band"] = pd.cut(age["person_b3c5"], bins=bins, labels=labels, right=True)
-        band = age.groupby("band", observed=True)[W].sum().reset_index()
-        band["pct"] = (band[W] / band[W].sum() * 100).round(2)
-        fig = px.bar(band, x="band", y="pct", title="Age-group of hospitalized persons", color="band")
-        st.plotly_chart(style_bar(fig, n_categories=len(band)), use_container_width=True)
-    else:
-        no_data("Age of hospitalized person")
+    means = pd.DataFrame({"Measure": ["Medical expenditure", "Out-of-pocket medical", "Total expenditure",
+                                      "Out-of-pocket total"],
+                          "Rs.": [weighted_mean(dc, "exp_medical_hosp", W), oop_med,
+                                  weighted_mean(dc, "exp_total_hosp", W), weighted_mean(dc, "exp_oop_hosp_total", W)]})
+    fig = px.bar(means, x="Measure", y="Rs.", color="Measure", title="Average per case (Rs.)")
+    show(style_bar(fig, n_categories=4, unit="Rs.", decimals=0))
+    note("Out-of-pocket = expenditure minus the amount reimbursed by insurance / employer (never below 0).")
+with c7:
+    by_type = group_wmean(dc, "b6i7", "exp_oop_hosp_medical", W)
+    if not by_type.empty:
+        by_type["b6i7"] = by_type["b6i7"].astype(str)
+        fig = px.bar(by_type.sort_values("mean"), x="mean", y="b6i7", orientation="h", color="b6i7",
+                     title="Average out-of-pocket medical expenditure by type of institution (Rs.)")
+        fig.update_layout(yaxis_title="", xaxis_title="Rs. per case", showlegend=False)
+        show(style_bar(fig, horizontal=True, n_categories=len(by_type), unit="Rs.", decimals=0))
+
+cost_band = pd.cut(pd.to_numeric(dc["exp_oop_hosp_medical"], errors="coerce"), [-1, 0, 5000, 20000, 50000, 1e12],
+                   labels=["Rs. 0", "1 – 5,000", "5,001 – 20,000", "20,001 – 50,000", "> 50,000"])
+cb = dc.assign(cost_band=cost_band).dropna(subset=["cost_band"]).groupby("cost_band", observed=True)[W].sum().reset_index()
+cb["pct"] = cb[W] / cb[W].sum() * 100
+cb["cost_band"] = cb["cost_band"].astype(str)
+fig = px.bar(cb, x="cost_band", y="pct", color="cost_band", title="Cases by out-of-pocket medical expenditure band")
+show(style_bar(fig, n_categories=len(cb)))
 
 st.divider()
-
-# ---------------- NEW: Volume vs cost per ailment — not shown above ----------------
-st.subheader("📊💰 Case volume vs. average cost, per ailment — a combo not shown above")
-drawn = dual_axis_combo(d, "b6i5", W, "exp_total_hosp",
-                         "Top ailments: hospitalization volume (bars) vs. avg total expenditure (line)",
-                         bar_name="Cases (weighted)", line_name="Avg expenditure (Rs.)")
-if drawn:
-    st.caption("The bar chart earlier showed only *how often* each ailment leads to hospitalization, and the "
-                "expenditure chart showed only the *overall* average cost. This links the two per ailment — "
-                "note that the most frequent ailments aren't always the most expensive ones.")
-else:
-    no_data("Volume vs cost combo chart")
-
-st.divider()
-
-# ---------------- NEW: Correlation analysis ----------------
-st.subheader("🔬 Correlation — duration of stay vs. total expenditure")
-if has(d, "b6i12", "exp_total_hosp"):
-    corr_df = d[["b6i12", "exp_total_hosp"]].copy()
-    corr_df["b6i12"] = pd.to_numeric(corr_df["b6i12"], errors="coerce")
-    corr_df["exp_total_hosp"] = pd.to_numeric(corr_df["exp_total_hosp"], errors="coerce")
-    corr_df = corr_df.replace([np.inf, -np.inf], np.nan).dropna()
-    # cap extreme outliers just for a readable plot (analysis below still uses full data)
-    if len(corr_df) > 5:
-        r = corr_df["b6i12"].corr(corr_df["exp_total_hosp"])
-        plot_df = corr_df.copy()
-        hi = plot_df["exp_total_hosp"].quantile(0.99)
-        plot_df = plot_df[plot_df["exp_total_hosp"] <= hi]
-        slope, intercept = np.polyfit(plot_df["b6i12"], plot_df["exp_total_hosp"], 1)
-        xs = np.linspace(plot_df["b6i12"].min(), plot_df["b6i12"].max(), 50)
-        fig = px.scatter(plot_df, x="b6i12", y="exp_total_hosp", opacity=0.35,
-                          title="Duration of hospital stay vs. total expenditure",
-                          labels={"b6i12": "Duration of stay (days)", "exp_total_hosp": "Total expenditure (Rs.)"})
-        fig.add_scatter(x=xs, y=slope * xs + intercept, mode="lines",
-                         name="Trend line", line=dict(color="#EF553B", width=3))
-        st.plotly_chart(fig, use_container_width=True)
-        strength = ("very weak" if abs(r) < 0.2 else "weak" if abs(r) < 0.4 else
-                    "moderate" if abs(r) < 0.6 else "strong" if abs(r) < 0.8 else "very strong")
-        direction = "positive" if r > 0 else "negative"
-        st.caption(f"Correlation coefficient (r) = **{r:.2f}** — a **{strength} {direction}** relationship: "
-                   f"longer hospital stays tend to {'cost more' if r > 0 else 'not clearly cost more'}, "
-                   f"on average. (Top 1% of expenditure values excluded from the plot for readability, "
-                   f"but included in the correlation calculation.)")
-    else:
-        no_data("Duration vs expenditure correlation")
-else:
-    no_data("Duration vs expenditure correlation")
+st.subheader("👶 Childbirth vs other admissions")
+cbrows = []
+for lbl, sub in [("Childbirth", all_cases[all_cases["childbirth"] == 1]), ("Other admissions", non_cb)]:
+    if len(sub):
+        pub = sub["b6i7"].astype(str).str.startswith("govt")
+        cbrows.append({"Group": lbl, "Cases (weighted)": round(wsum(sub, W)),
+                       "Share in government hospitals (%)": round(wsum(sub[pub], W) / wsum(sub, W) * 100, 1),
+                       "Avg out-of-pocket medical (Rs.)": round(weighted_mean(sub, "exp_oop_hosp_medical", W)),
+                       "Avg length of stay (days)": round(weighted_mean(sub, "b6i12", W), 1)})
+if cbrows:
+    st.dataframe(pd.DataFrame(cbrows), width="stretch", hide_index=True)
+    note("The official hospitalization rate excludes childbirth; it is shown separately here (ignores the 'Cases included' choice).")
 
 st.divider()
+st.subheader("👥 Who gets admitted — rate by age group and gender")
+nb, db = age_band(non_cb["age_years"]), age_band(pop["Age(in years)"])
+rows = []
+for gname in ["male", "female"]:
+    hm, dm = non_cb["gender"].astype(str) == gname, pop["Gender"].astype(str) == gname
+    if hm.any() and dm.any():
+        t = rate_by(non_cb[hm], pop[dm], nb[hm], db[dm], W, "final_weight")
+        t["Gender"] = gname
+        rows.append(t)
+if rows:
+    rt = pd.concat(rows)
+    rt["Age group"] = rt["group"].astype(str)
+    fig = px.bar(rt, x="Age group", y="rate", color="Gender", barmode="group", color_discrete_map=COLOR_GENDER,
+                 category_orders={"Age group": AGE_LABELS}, title="Admissions (excl. childbirth) per 100 persons")
+    fig.update_layout(yaxis_title="%", xaxis_title="Age group (years)")
+    show(fig)
 
-# ---------------- NEW: Anomaly highlighting ----------------
-st.subheader("🚨 Anomaly highlighting — states with unusually high hospitalization expenditure")
-if has(d, "st", "exp_total_hosp", W):
-    an = d[["st", "exp_total_hosp", W]].dropna().copy()
-    an["state"] = decode_state_code(an, "st")
-    an = an.dropna(subset=["state"])
-    an[W] = pd.to_numeric(an[W], errors="coerce")
-    an["exp_total_hosp"] = pd.to_numeric(an["exp_total_hosp"], errors="coerce")
-    an["_wsum"] = an["exp_total_hosp"] * an[W]
-    grp = an.groupby("state").agg(_wsum=("_wsum", "sum"), _wtot=(W, "sum")).reset_index()
-    grp["avg_exp"] = grp["_wsum"] / grp["_wtot"]
-    grp = grp.replace([np.inf, -np.inf], np.nan).dropna(subset=["avg_exp"])
-    if len(grp) > 3:
-        mean_exp = grp["avg_exp"].mean()
-        std_exp = grp["avg_exp"].std()
-        grp["z_score"] = (grp["avg_exp"] - mean_exp) / std_exp if std_exp else 0
-        grp["Status"] = np.where(grp["z_score"] > 1.5, "⚠️ Unusually high",
-                          np.where(grp["z_score"] < -1.5, "🔽 Unusually low", "Normal range"))
-        grp = grp.sort_values("avg_exp", ascending=False)
-        fig = px.bar(grp, x="state", y="avg_exp", color="Status",
-                     color_discrete_map={"⚠️ Unusually high": "#EF553B", "🔽 Unusually low": "#636EFA",
-                                          "Normal range": "#B0B0B0"},
-                     title="Avg hospitalization expenditure by state — anomalies flagged (>1.5 std dev from mean)")
-        fig.add_hline(y=mean_exp, line_dash="dash", line_color="gray",
-                       annotation_text=f"National avg: Rs. {mean_exp:,.0f}")
-        fig.update_layout(xaxis=dict(tickangle=-45, automargin=True), margin=dict(b=140), height=520,
-                           yaxis_title="Avg total expenditure (Rs.)")
-        st.plotly_chart(fig, use_container_width=True)
-        flagged = grp[grp["Status"] != "Normal range"]
-        if not flagged.empty:
-            st.caption("Flagged states: " + ", ".join(
-                f"**{row['state']}** ({row['Status']})" for _, row in flagged.iterrows()))
-        else:
-            st.caption("No state deviates more than 1.5 standard deviations from the national average.")
-    else:
-        no_data("Anomaly highlighting")
+st.divider()
+st.subheader("📊 Volume vs cost — top ailments")
+dual_axis_combo(dc, "b6i5", W, "exp_oop_hosp_medical", "Weighted cases (bars) and average out-of-pocket medical cost (line)",
+                "Weighted cases", "Avg OOP medical (Rs.)")
+
+st.divider()
+st.subheader("🔗 Stay, cost and reimbursement")
+c8, c9 = st.columns(2)
+with c8:
+    labels = {"b6i12": "Length of stay", "exp_medical_hosp": "Medical exp.", "exp_oop_hosp_medical": "OOP medical",
+              "exp_total_hosp": "Total exp.", "exp_oop_hosp_total": "OOP total"}
+    correlation_heatmap(dc, list(labels), labels, "Correlation (all sampled cases, unweighted)", height=420)
+with c9:
+    pts = dc[(pd.to_numeric(dc["exp_oop_hosp_medical"], errors="coerce") > 0) & dc["b6i12"].notna()]
+    if len(pts):
+        pts = pts.sample(min(4000, len(pts)), random_state=0).assign(b6i7=lambda x: x["b6i7"].astype(str))
+        fig = px.scatter(pts, x="b6i12", y="exp_oop_hosp_medical", color="b6i7", log_y=True, opacity=0.5,
+                         title="Stay vs out-of-pocket medical cost (random sample of 4,000 cases, log scale)")
+        fig.update_layout(xaxis_title="Length of stay (days)", yaxis_title="Rs. (log)", legend_title="Institution")
+        show(fig)
+note("Correlations and the scatter use unweighted sample cases (the scatter shows a random subsample and only cases with a cost above 0).")
+
+st.divider()
+st.subheader("🔍 States that stand out on cost")
+sc = st_cost[st_cost["n"] >= MIN_N].copy()
+if len(sc) >= 5:
+    sc["z"] = (sc["mean"] - sc["mean"].mean()) / sc["mean"].std()
+    sc["Flag"] = np.where(sc["z"].abs() > 1.5, "Unusually high / low vs other states", "Within the usual range")
+    fig = px.bar(sc.sort_values("mean"), x="mean", y="st", orientation="h", color="Flag", height=max(450, 22 * len(sc)),
+                 color_discrete_map={"Unusually high / low vs other states": "#F97316", "Within the usual range": "#0F766E"},
+                 title="Average out-of-pocket medical expenditure per case, by state (Rs.)")
+    fig.add_vline(x=oop_med, line_dash="dash", line_color="#0B1F3A", annotation_text="National (weighted)")
+    fig.update_layout(yaxis_title="", xaxis_title="Rs. per case")
+    show(fig)
+    note(f"Only states with at least {MIN_N} sample cases are shown. 'Unusual' means more than 1.5 standard deviations "
+         "from the average of state averages — a prompt to look closer, not a finding of error or poor performance.")
 else:
-    no_data("Anomaly highlighting")
+    note("Not enough states with a sufficient sample under the current filters.")
 
-st.caption("Source: hospitalization_cases_full.csv — weighted using `wt`.")
+st.caption("Source: hospitalization_cases_full.csv (cases) and nss_health_master_FULL.csv (persons) — weighted.")

@@ -1,148 +1,122 @@
-import streamlit as st
 import pandas as pd
 import plotly.express as px
-from utils import (branding, page_header, load, has, weighted_pct,
-                    sidebar_filters, apply_filters, style_bar, style_pie, no_data,
-                    bar_with_table_toggle, COLOR_GENDER, nested_sunburst)
+import streamlit as st
+
+from utils import (branding, page_header, require, weighted_pct, weighted_share, wsum, age_band, sidebar_filters,
+                   apply_filters, style_bar, style_pie, show, note, bar_with_table_toggle, rank_callout,
+                   nested_sunburst, COLOR_GENDER, AGE_LABELS)
 
 st.set_page_config(page_title="Person Profile — National Health Pulse India", layout="wide", page_icon="🧑")
 branding()
 
-df = load("person.csv")
-if df.empty:
-    st.error("`person.csv` not found in the `data/` folder.")
+W = "wt"
+COLS = ["st", "sec", W, "b3c3", "b3c4", "b3c5", "b3c6", "b3c7", "b3c13", "b3c14", "b3c15", "b3c17"]
+df = require("person.csv", COLS)
+
+# Schedule 25.0 Block 3:  col 13 = communicable disease (01-12, 19 = not suffered)
+#                         col 14 = chronic ailment (1 yes / 2 no)   col 15 = any OTHER ailment, last 15 days
+filters = sidebar_filters(df, "person")
+d = apply_filters(df, filters, "person")
+if d.empty:
+    st.warning("No records for this combination of filters.")
     st.stop()
 
-# person.csv column map:
-# b3c3 relation-to-head, b3c4 gender, b3c5 age, b3c6 marital status,
-# b3c7 education, b3c13 chronic ailment, b3c17 insurance scheme type
-filters = sidebar_filters(df, kind="detail")
-d = apply_filters(df, filters)
-W = "wt"
+chronic = pd.to_numeric(d["b3c14"], errors="coerce")
+other = pd.to_numeric(d["b3c15"], errors="coerce")
+known = chronic.notna() | other.notna()
+comm = d["b3c13"].astype(str)
+d = d.assign(chronic_flag=chronic, chronic_lbl=chronic.map({1.0: "Chronic ailment", 2.0: "No chronic ailment"}))
 
-page_header("🧑", "Person Profile", "Extra columns beyond the master file — education, marital status, insurance scheme, chronic disease",
-            crumb="Dashboard / Person Profile", badge_label="Persons", badge_value=f"{len(d):,}")
+page_header("🧑", "Person Profile",
+            "Chronic ailment, communicable disease, insurance scheme, education, marital status and relation to head",
+            crumb="Dashboard / Person Profile", badge_label="Sample persons", badge_value=f"{len(d):,}")
 
-if has(d, "st", "b3c13", W):
-    from utils import decode_state_code, render_insight_callout
-    cd = d[["st", "b3c13", W]].dropna().copy()
-    cd["state"] = decode_state_code(cd, "st")
-    cd = cd.dropna(subset=["state"])
-    cd[W] = pd.to_numeric(cd[W], errors="coerce")
-    cd["is_chronic"] = ~cd["b3c13"].astype(str).str.lower().str.contains("not suffered")
-    tot = cd.groupby("state")[W].sum()
-    chronic_w = cd[cd["is_chronic"]].groupby("state")[W].sum()
-    rate = (chronic_w / tot * 100).dropna()
-    _nat = (cd.loc[cd["is_chronic"], W].sum() / cd[W].sum() * 100) if cd[W].sum() else None
-    if len(rate) > 1:
-        _bs, _bv, _ws, _wv = rate.idxmin(), rate.min(), rate.idxmax(), rate.max()
-    else:
-        _bs = _bv = _ws = _wv = None
-    render_insight_callout(_nat, _bs, _bv, _ws, _wv, "Chronic disease prevalence",
-                            fmt="{:.1f}", unit="", higher_is_worse=True)
+# ---------------- key takeaway ----------------
+t = d.dropna(subset=["chronic_flag"]).copy()
+t["wc"] = t[W] * (t["chronic_flag"] == 1)
+g = t.groupby("st", observed=True).agg(wc=("wc", "sum"), w=(W, "sum"), n=(W, "size")).reset_index()
+g["rate"] = g["wc"] / g["w"] * 100
+nat_chronic = weighted_share(d, chronic == 1, W, universe=chronic.notna())
+rank_callout(g, "st", "rate", "n", "The share of persons with a chronic ailment", nat_chronic, fmt="{:.1f}", suffix="%",
+             caution="Prevalence rises steeply with age, so state differences partly reflect age structure.")
 
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("👤 Persons (weighted)", f"{pd.to_numeric(d[W], errors='coerce').sum():,.0f}" if has(d, W) else "N/A")
-
-if has(d, "b3c13"):
-    chr_ = weighted_pct(d, "b3c13", W)
-    not_suf = chr_[chr_["b3c13"].astype(str).str.lower().str.contains("not suffered")]
-    chronic_pct = 100 - (not_suf["pct"].iloc[0] if not not_suf.empty else 0)
-    k2.metric("🩺 Chronic disease prevalence", f"{chronic_pct:.1f}%")
-else:
-    k2.metric("🩺 Chronic disease prevalence", "N/A")
-
-if has(d, "b3c17"):
-    ins = weighted_pct(d, "b3c17", W)
-    not_cov = ins[ins["b3c17"].astype(str).str.lower() == "not covered"]
-    covered_pct = 100 - (not_cov["pct"].iloc[0] if not not_cov.empty else 0)
-    k3.metric("🛡️ Insurance coverage", f"{covered_pct:.1f}%")
-else:
-    k3.metric("🛡️ Insurance coverage", "N/A")
-
-if has(d, "b3c7"):
-    edu = weighted_pct(d, "b3c7", W)
-    lit = edu[~edu["b3c7"].astype(str).str.lower().str.contains("not literate")]
-    k4.metric("📚 Literacy rate", f"{lit['pct'].sum():.1f}%")
-else:
-    k4.metric("📚 Literacy rate", "N/A")
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("👤 Persons (weighted)", f"{wsum(d, W):,.0f}")
+k2.metric("🤒 Ailing persons, 15 days (PPRA)", f"{weighted_share(d, (chronic == 1) | (other == 1), W, universe=known):.1f}%",
+          help="Chronic ailment OR any other ailment in the last 15 days. Official: 13.1%.")
+k3.metric("🩺 Chronic ailment prevalence", f"{nat_chronic:.1f}%")
+k4.metric("🦠 Communicable disease reported", f"{weighted_share(d, comm != 'not suffered', W, universe=d['b3c13'].notna()):.1f}%",
+          help="Suffered from malaria, hepatitis, diarrhoea, dengue, TB etc. in the reference period (column 13).")
+k5.metric("🛡️ Persons with health insurance / scheme",
+          f"{weighted_share(d, d['b3c17'].astype(str) != 'not covered', W, universe=d['b3c17'].notna()):.1f}%",
+          help="Single-response question — one scheme per person.")
 
 st.divider()
-
-st.subheader("🎓 Education level breakdown")
-if has(d, "b3c7"):
-    edu = weighted_pct(d, "b3c7", W)
-    bar_with_table_toggle(st, edu, "b3c7", "pct", "Highest educational level attained", key="edu")
-else:
-    no_data("Education")
-
-st.divider()
-
-st.subheader("💍 Marital status by age-group")
-if has(d, "b3c6", "b3c5"):
-    m = d[["b3c6", "b3c5", W]].dropna().copy()
-    m["b3c5"] = pd.to_numeric(m["b3c5"], errors="coerce")
-    m[W] = pd.to_numeric(m[W], errors="coerce")
-    bins = [0, 18, 30, 45, 60, 200]
-    labels = ["0-18", "19-30", "31-45", "46-60", "60+"]
-    m["age_band"] = pd.cut(m["b3c5"], bins=bins, labels=labels, right=True)
-    grp = m.groupby(["age_band", "b3c6"], observed=True)[W].sum().reset_index()
-    tot = grp.groupby("age_band", observed=True)[W].transform("sum")
-    grp["pct"] = (grp[W] / tot * 100).round(1)
-    fig = px.bar(grp, x="age_band", y="pct", color="b3c6", barmode="stack",
-                 title="Marital status share within each age-group")
-    fig.update_layout(height=480, xaxis_title="Age group", yaxis_title="%",
-                       legend_title="Marital status")
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    no_data("Marital status / age")
+st.subheader("🩺 Chronic ailment prevalence by age and gender")
+tt = t.assign(band=age_band(t["b3c5"]))
+gg = tt.groupby(["band", "b3c4"], observed=True).agg(wc=("wc", "sum"), w=(W, "sum")).reset_index()
+gg = gg[gg["b3c4"].astype(str).isin(["male", "female"])]
+if not gg.empty:
+    gg["rate"] = gg["wc"] / gg["w"] * 100
+    gg["band"] = gg["band"].astype(str)
+    gg["b3c4"] = gg["b3c4"].astype(str)
+    fig = px.bar(gg, x="band", y="rate", color="b3c4", barmode="group", color_discrete_map=COLOR_GENDER,
+                 category_orders={"band": AGE_LABELS}, title="% of persons with a chronic ailment")
+    fig.update_layout(yaxis_title="%", xaxis_title="Age group (years)", legend_title="Gender")
+    show(fig)
 
 st.divider()
-
-st.subheader("🩺 Chronic disease prevalence")
 c1, c2 = st.columns(2)
 with c1:
-    if has(d, "b3c13"):
-        chr_all = weighted_pct(d, "b3c13", W)
-        bar_with_table_toggle(st, chr_all, "b3c13", "pct", "Chronic ailment breakdown", key="chronic")
+    st.subheader("🦠 Communicable disease (those who suffered)")
+    sub = d[(comm != "not suffered") & d["b3c13"].notna()]
+    if len(sub):
+        bar_with_table_toggle(st, weighted_pct(sub, "b3c13", W), "b3c13", "pct",
+                              "Which disease (% of persons who suffered)", key="comm", top_n=8)
     else:
-        no_data("Chronic ailment")
+        note("No communicable-disease cases in this selection.")
 with c2:
-    if has(d, "b3c4"):
-        g = weighted_pct(d, "b3c4", W)
-        fig = px.pie(g, names="b3c4", values="pct", title="Gender split", color="b3c4",
-                     color_discrete_map=COLOR_GENDER, hole=0.45)
-        st.plotly_chart(style_pie(fig), use_container_width=True)
-    else:
-        no_data("Gender")
+    st.subheader("🚻 Gender")
+    show(style_pie(px.pie(weighted_pct(d, "b3c4", W), names="b3c4", values="pct", title="Gender composition", hole=0.45,
+                          color="b3c4", color_discrete_map=COLOR_GENDER)))
 
 st.divider()
+st.subheader("🛡️ Health insurance / scheme coverage")
+c3, c4 = st.columns(2)
+ins = weighted_pct(d, "b3c17", W)
+with c3:
+    bar_with_table_toggle(st, ins, "b3c17", "pct", "Scheme type (all persons)", key="ins_scheme", top_n=10, label_width=40)
+with c4:
+    cov = d[(d["b3c17"].astype(str) != "not covered") & d["b3c17"].notna()]
+    if len(cov):
+        bar_with_table_toggle(st, weighted_pct(cov, "b3c17", W), "b3c17", "pct",
+                              "Scheme type (among covered persons)", key="ins_covered", top_n=10, label_width=40)
+note("Only one scheme is recorded per person (NSS 'Note for data user'), so shares are not comparable with sources "
+     "that count multiple enrolments.")
 
-st.subheader("🛡️ Insurance scheme type-wise coverage")
-if has(d, "b3c17"):
-    ins = weighted_pct(d, "b3c17", W)
-    bar_with_table_toggle(st, ins, "b3c17", "pct", "Insurance scheme type", key="ins_scheme")
-else:
-    no_data("Insurance scheme type")
+st.divider()
+st.subheader("🎓 Education & marital status (composition of the sample)")
+note("Shown to classify health indicators — NSS advises against using these variables for literacy or population estimates.")
+c5, c6 = st.columns(2)
+with c5:
+    bar_with_table_toggle(st, weighted_pct(d, "b3c7", W), "b3c7", "pct", "Highest educational level attained",
+                          key="edu", top_n=8, label_width=42)
+with c6:
+    m = d.dropna(subset=["b3c6"]).assign(band=age_band(d["b3c5"]))
+    grp = m.groupby(["band", "b3c6"], observed=True)[W].sum().reset_index()
+    grp["pct"] = grp[W] / grp.groupby("band", observed=True)[W].transform("sum") * 100
+    grp["band"], grp["b3c6"] = grp["band"].astype(str), grp["b3c6"].astype(str)
+    fig = px.bar(grp, x="band", y="pct", color="b3c6", barmode="stack", category_orders={"band": AGE_LABELS},
+                 title="Marital status within each age group")
+    fig.update_layout(height=470, xaxis_title="Age group (years)", yaxis_title="%", legend_title="Marital status")
+    show(fig)
 
 st.subheader("👪 Relation to head")
-if has(d, "b3c3"):
-    rel = weighted_pct(d, "b3c3", W)
-    bar_with_table_toggle(st, rel, "b3c3", "pct", "Relation to head of household", key="rel_head")
-else:
-    no_data("Relation to head")
+bar_with_table_toggle(st, weighted_pct(d, "b3c3", W), "b3c3", "pct", "Relation to head of household", key="rel_head")
 
 st.divider()
+st.subheader("🌞 Education × marital status × chronic ailment (joint view)")
+if nested_sunburst(d, ["b3c7", "b3c6", "chronic_lbl"], W, "Population split: Education → Marital status → Chronic ailment"):
+    note("Click a ring to drill in, e.g. what share of a given education / marital group reports a chronic ailment.")
 
-# ---------------- NEW: Sunburst — a joint number not shown above ----------------
-st.subheader("🌞 Education × Marital status × Chronic disease — a joint view not shown above")
-drawn = nested_sunburst(d, ["b3c7", "b3c6", "b3c13"], W,
-                         "Population split by Education → Marital status → Chronic ailment")
-if drawn:
-    st.caption("Education and marital status were shown earlier only as separate bar charts. Here they're "
-               "combined with chronic-disease status into one weighted breakdown — click any ring to drill in "
-               "and see, e.g., what share of educated, married persons report a chronic ailment.")
-else:
-    no_data("Education / Marital status / Chronic ailment sunburst")
-
-st.caption("Source: person.csv — weighted using `wt`.")
+st.caption("Source: person.csv — weighted with `wt`.")
