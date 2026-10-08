@@ -11,7 +11,8 @@ branding()
 
 W = "wt"
 ACOLS = ["st", "sec", W, "b8i5", "b8i6", "b8i7", "b8i9", "b8i10", "b8i11", "b8i12", "exp_total_spell",
-         "exp_oop_spell_total", "exp_medical_spell", "exp_oop_spell_medical"]
+         "exp_oop_spell_total", "exp_medical_spell", "exp_oop_spell_medical",
+         "b8i13", "b8i14", "b8i15", "b9i11", "b9i12", "b9i13", "b9i14", "b9i15", "b9i17", "b9i18", "b9i21", "b9i24", "b8i8"]
 ail = require("ailment_spells_full.csv", ACOLS, events=True)
 master = require("nss_health_master_FULL.csv", ["state", "sector", "Gender", "Age(in years)", "final_weight",
                                                 "n_ailment_spells_15d"])
@@ -130,6 +131,48 @@ with c6:
             fig.update_layout(yaxis_title="", xaxis_title="Rs. per treated spell", showlegend=False)
             show(style_bar(fig, horizontal=True, n_categories=len(by), unit="Rs.", decimals=0))
             note("Ailments with fewer than 30 sampled treated spells are left out.")
+
+st.divider()
+st.subheader("🧮 Where out-patient money goes — cost components per treated spell")
+oc = {"Doctor / surgeon fee": "b9i11", "Medicines (AYUSH)": "b9i12", "Medicines (other)": "b9i13", "Diagnostic tests": "b9i14",
+      "Other medical": "b9i15", "Transport for patient": "b9i17", "Other non-medical": "b9i18"}
+if len(treated):
+    orows = [{"Component": k, "Rs.": weighted_mean(treated, v, W)} for k, v in oc.items()]
+    odf = pd.DataFrame(orows)
+    o1, o2 = st.columns([3, 2])
+    with o1:
+        fig = px.bar(odf.sort_values("Rs."), x="Rs.", y="Component", orientation="h", color="Component",
+                     title="Average expenditure per treated out-patient spell by component (Rs., before reimbursement)")
+        fig.update_layout(yaxis_title="", xaxis_title="Rs. per spell", showlegend=False, height=430)
+        show(fig)
+    with o2:
+        st.metric("Sum of components", f"Rs. {odf['Rs.'].sum():,.0f}")
+        st.metric("Total expenditure per spell", f"Rs. {weighted_mean(treated, 'exp_total_spell', W):,.0f}")
+        note("Medical items (fee, medicines, tests, other medical) add up to medical expenditure; transport and other "
+             "non-medical expenses make up the rest of the total.")
+
+st.divider()
+st.subheader("❓ Why care was not sought, and who was consulted")
+r1, r2, r3 = st.columns(3)
+with r1:
+    nc = da[da["b8i14"].notna()]
+    if len(nc):
+        bar_with_table_toggle(st, weighted_pct(nc, "b8i14", W), "b8i14", "pct",
+                              "Reason for not seeking medical advice (% of such spells)", key="a_noadv", top_n=6, label_width=34)
+    else:
+        note("No spells without medical advice under the current filters.")
+with r2:
+    wc = da[da["b8i15"].notna()]
+    if len(wc):
+        bar_with_table_toggle(st, weighted_pct(wc, "b8i15", W), "b8i15", "pct",
+                              "Whom they consulted instead (spells without medical advice)", key="a_whom", top_n=6, label_width=34)
+with r3:
+    ng = da[da["b8i13"].notna()]
+    if len(ng):
+        bar_with_table_toggle(st, weighted_pct(ng, "b8i13", W), "b8i13", "pct",
+                              "Reason for not using a government source (% of such spells)", key="a_nogov", top_n=7, label_width=34)
+note("Each question is asked only of the spells it applies to, so the percentages are within that group, not of all spells. "
+     "Reasons are as reported by the household.")
 
 st.divider()
 st.subheader("🌳 Ailment → system of treatment")
