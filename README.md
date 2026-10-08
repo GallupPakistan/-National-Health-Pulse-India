@@ -23,3 +23,11 @@ NSS Report No. 596. If any row shows "differs", the data files are not the compl
 - State code 99 (16 households) is assigned to Himachal Pradesh (`STATE_RECODE` in `utils.py`).
 - State rankings need at least 100 sample records (`MIN_N` in `utils.py`).
 - Map outlines (`data/india_states.geojson`) come from a dissolved third-party district file; illustrative only.
+
+## Known limitations
+- Childbirth average out-of-pocket cost is about 2.6% above Report 596 (Rs. ~15,150 vs 14,775); the report's exact case base is not stated.
+- Hospitalization rate for age 60+ is 0.1 point above the report's chart (male 9.4 vs 9.3, female 7.0 vs 6.9).
+- Rural institutional childbirth is 95.75% vs 95.6% in the report.
+- Deaths: the pregnancy-timing question has only 41 sample cases.
+- State code 99 (16 households) is assigned to Himachal Pradesh by inference.
+- Charts without a published figure in the report (vaccination, deaths, education, household type) are built from the data only.
